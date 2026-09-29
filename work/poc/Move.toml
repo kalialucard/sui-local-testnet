@@ -1,0 +1,3 @@
+[package]
+name = "poc"
+edition = "2024"

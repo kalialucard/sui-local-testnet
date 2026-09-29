@@ -1,0 +1,14 @@
+services:
+  sui-local:
+    image: mysten/sui-tools:testnet   # pin to an exact tag for reproducible builds
+    container_name: sui-local
+    network_mode: host                # Linux only: exposes 9000/9123 on the host
+    environment:
+      RUST_LOG: "off,sui_node=info"
+    volumes:
+      - ./work:/work                  # your Move packages + ephemeral pubfile
+      - sui-client:/root/.sui         # wallet keystore + client config
+    command: ["sui", "start", "--with-faucet", "--force-regenesis"]
+    restart: "no"
+volumes:
+  sui-client:

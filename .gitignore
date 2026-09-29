@@ -1,0 +1,12 @@
+# ephemeral publish state (addresses from a dead chain)
+*.pub.toml
+Published.toml
+# Move build output
+**/build/
+# never commit wallet material
+*.keystore
+sui.keystore
+client.yaml
+*.key
+*.mnemonic
+.env
