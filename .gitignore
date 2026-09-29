@@ -12,3 +12,8 @@ client.yaml
 .env
 docker-compose.override.yml
 docker-compose.override.yml
+
+# copies of external target packages (see docs/EXTERNAL-TARGETS.md, Option B)
+# never track third-party code copied here for local publishing
+work/*/
+!work/poc/
