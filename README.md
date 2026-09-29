@@ -9,7 +9,7 @@ JSON-RPC endpoint. State is disposable.
 | JSON-RPC | `http://127.0.0.1:9000` |
 | Faucet   | `http://127.0.0.1:9123` |
 
-> Verified 2026-09-30 with `mysten/sui-tools:testnet`. CLI flags change between
+> Verified 2026-09-30 with `mysten/sui-tools:testnet` (sui 1.81.0-bf0c491c17b8). CLI flags change between
 > Sui releases; pin an exact image tag if you need reproducibility.
 
 ## Contents
