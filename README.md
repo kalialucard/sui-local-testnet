@@ -161,7 +161,7 @@ active address. Package IDs and objects from the previous chain are gone.
 | `Ephemeral publication file does not exist ... --build-env` | `test-publish` needs an env | Use `scripts/publish.sh` |
 | `Environment config with name [local] already exists` | Env already registered | Harmless; run `suic switch --env local` |
 | Logs flooded with `Submitting JWK to consensus` | zkLogin JWK updater | Ignore; `docker compose logs sui-local \| grep -v jwk` |
-| Files in `work/` are root-owned | Written from inside the container | `sudo chown -R $USER work` |
+| `rm` or `git clean` fails with "Permission denied" under `work/` | The container runs as root and wrote `work/*/build/` | `sudo chown -R $USER work`, or `sudo rm -rf` the directory |
 | Startup fails when `/tmp` is tmpfs | Node data dir in `/tmp` | Set `TMPDIR` to a real directory in the compose file |
 | Faucet 404 | Endpoint differs by version | Try `/v2/gas` and `/gas` |
 | Faucet `Connection refused` on port 9123 | Faucet starts a moment after RPC | Run `./scripts/wait.sh`, then retry |
