@@ -130,6 +130,8 @@ Notes on the publish command:
 - Publish merges your gas coins into one. Use `suic split-coin` if a PoC needs
   separate coins.
 
+See also: [Testing your own codebase in another folder](docs/EXTERNAL-TARGETS.md).
+
 ## Running a PoC
 1. Put the target Move package in `work/<name>/`.
 2. `./scripts/publish.sh <name>`
