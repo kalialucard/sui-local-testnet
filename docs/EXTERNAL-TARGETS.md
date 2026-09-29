@@ -1,167 +1,181 @@
-# Testing your own codebase against this local testnet
+# Running your own PoC against this private testnet
 
-This rig (`sui-local-testnet`) runs a private Sui chain in Docker. This guide
-covers pointing it at Move packages that live in a different folder on your
-machine — for example a separate workspace of audit targets — without
-touching the main setup.
+This guide is for anyone who already has this repo's Sui chain running and
+wants to test a Move package or PoC that lives in a **separate folder or
+workspace on their machine** — a security audit target, a client's codebase,
+a different git repo, anything outside this project.
 
-> Verified 2026-09-30 with `mysten/sui-tools:testnet` (sui 1.81.0-bf0c491c17b8).
+You never need to copy files into this repo or edit any script's contents.
+Everything below uses a local override file plus one environment variable.
 
 ## Contents
-1. [Layout](#layout)
-2. [One-time mount setup](#one-time-mount-setup)
-3. [Publishing a target package](#publishing-a-target-package)
-4. [Handling build output (read-only mounts)](#handling-build-output-read-only-mounts)
-5. [Running attacker/victim PoCs](#running-attackervictim-pocs)
-6. [TypeScript PoCs against the running chain](#typescript-pocs-against-the-running-chain)
-7. [Multiple unrelated workspaces](#multiple-unrelated-workspaces)
-8. [Troubleshooting](#troubleshooting)
-9. [Safety](#safety)
+1. [How it works](#how-it-works)
+2. [Step 1: point the container at your workspace](#step-1-point-the-container-at-your-workspace)
+3. [Step 2: publish a package from your workspace](#step-2-publish-a-package-from-your-workspace)
+4. [Step 3: run your PoC](#step-3-run-your-poc)
+5. [Working with several workspaces](#working-with-several-workspaces)
+6. [Build output and read-only mounts](#build-output-and-read-only-mounts)
+7. [Troubleshooting](#troubleshooting)
+8. [Safety](#safety)
 
-## Layout
-Example external workspace:
-```
-~/hackenproof/
-├── NAVIProtocol/
-├── ScallopProtocol/
-├── HaedalSmartContracts/
-├── TurbosFinanceSmartContracts/
-└── ...
-```
-Each of these is treated as an independent target. This chain has no relation
-to any of these projects' real deployments; publishing here creates a brand
-new package at a brand new address on your private genesis.
+## How it works
+Docker containers only see folders you explicitly mount. This repo's
+`docker-compose.yml` mounts `./work` by default. To reach a folder anywhere
+else — `~/my-audits`, `~/client-project`, a cloned repo, whatever — you add
+your own `docker-compose.override.yml`, which Docker Compose merges
+automatically on top of the base file. It is never committed (see
+`.gitignore`), so each person on this rig points it at their own paths
+without touching shared files.
 
-## One-time mount setup
-From the `sui-local-testnet` repo root, add a local override (kept out of git,
-since the path is specific to this machine):
+## Step 1: point the container at your workspace
+In the repo root, create the override once (edit the left-hand host path to
+match your machine):
 
 ```bash
-echo "docker-compose.override.yml" >> .gitignore
-
 cat > docker-compose.override.yml <<'YAML'
 services:
   sui-local:
     volumes:
-      - /home/alucard/hackenproof:/targets:ro
+      - /absolute/path/to/your/workspace:/targets:ro
 YAML
 
-docker compose up -d       # recreates the container: this resets the chain
-./scripts/setup-wallet.sh  # re-fund after reset
+docker compose up -d       # applies the mount — this restarts the chain
+./scripts/setup-wallet.sh  # re-fund after the restart
 ```
 
-Recreating the container triggers `--force-regenesis` again, so any packages
-published before this point are gone. Do this once, before starting a
-session, not mid-PoC.
+Replace `/absolute/path/to/your/workspace` with wherever your code actually
+lives, for example `/home/alucard/my-audits` or `/home/alucard/client-repo`.
+Mount the **parent folder** if you'll work across several projects inside it
+(see [Working with several workspaces](#working-with-several-workspaces)),
+or a **single project folder** if you only need one.
 
-## Publishing a target package
-Use `scripts/publish-target.sh <relative-path-under-the-mounted-folder>`:
+`:ro` (read-only) means the container can read your code but never modify
+it. Some build tooling needs to write output next to the source — see
+[Build output and read-only mounts](#build-output-and-read-only-mounts) for
+how to handle that without giving up the read-only guarantee everywhere
+else.
+
+Recreating the container restarts the chain (`--force-regenesis`), so do
+this once at the start of a session, not mid-PoC.
+
+## Step 2: publish a package from your workspace
+`scripts/publish-target.sh` takes two inputs: the `TARGET_DIR` environment
+variable (the same host path you put in the override) and the path to the
+package inside it (wherever `Move.toml` sits):
 
 ```bash
-./scripts/publish-target.sh NAVIProtocol
+TARGET_DIR=/absolute/path/to/your/workspace \
+  ./scripts/publish-target.sh <path-to-package-with-Move.toml>
 ```
 
-This requires a `Move.toml` directly in that folder. If the package lives
-deeper (a monorepo with contracts under a subdirectory), give the fuller
-path:
-
+Example: your workspace is `~/my-audits`, and the package you want to test
+is at `~/my-audits/SomeProtocol/contracts`:
 ```bash
-./scripts/publish-target.sh ScallopProtocol/contracts/lending
+TARGET_DIR=/home/alucard/my-audits \
+  ./scripts/publish-target.sh SomeProtocol/contracts
 ```
 
-Success prints `Status: Success` and a `PackageID`. Republishing the same
-target fails with "already published" — see the main README's `FRESH=1`
-note, or the per-package pubfile approach below if you're juggling several
-targets in one session.
+If you don't know where `Move.toml` is inside a project, find it first:
+```bash
+find /absolute/path/to/your/workspace -iname Move.toml
+```
 
-## Handling build output (read-only mounts)
-`test-publish` compiles the package and writes a `build/` directory next to
-its `Move.toml`. A read-only mount blocks that write. Two options:
+Success prints `Status: Success` and a `PackageID`. Save it — you'll pass it
+to your PoC.
 
-**Per-target writable override** — add a second line to
-`docker-compose.override.yml` for the one target you're actively working on:
+Publishing the same package again fails with "already published" (the
+ephemeral pubfile remembers it). Either:
+- use a separate pubfile per target: `PUBFILE=someprotocol.pub.toml TARGET_DIR=... ./scripts/publish-target.sh ...`
+- or clear the shared one: `rm work/local.pub.toml` and republish.
+
+## Step 3: run your PoC
+Once published, everything from the main README's
+[Running a PoC](../README.md#running-a-poc) section applies as normal:
+create attacker/victim addresses, fund them, call the package, inspect
+effects with `sui client tx-block` and `sui client objects`.
+
+For scripted (TypeScript/JS) PoCs you don't need the mount at all — this
+compose file uses `network_mode: host`, so any script on your machine reaches
+the chain directly:
+```js
+import { SuiClient } from '@mysten/sui/client';
+const client = new SuiClient({ url: 'http://127.0.0.1:9000' });
+```
+Faucet: `POST http://127.0.0.1:9123/v2/gas` with
+`{"FixedAmountRequest":{"recipient":"<address>"}}`.
+
+Write and run the PoC script wherever you like — inside your own workspace,
+alongside the target code, or anywhere else on your machine. Only the
+published `PackageID` and the chain's local RPC address matter.
+
+## Working with several workspaces
+Add one line per folder to the override:
 ```yaml
 services:
   sui-local:
     volumes:
-      - /home/alucard/hackenproof:/targets:ro
-      - /home/alucard/hackenproof/NAVIProtocol:/targets/NAVIProtocol
+      - /home/alucard/my-audits:/targets:ro
+      - /home/alucard/client-repo:/targets2:ro
 ```
-`docker compose up -d` to apply (this resets the chain).
-
-**Copy into `work/`** instead of mounting the original at all:
+Then publish from either, using the container path that matches the mount
+(`/targets/...` or `/targets2/...`). `publish-target.sh` assumes container
+path `/targets/<subpath>`; for a second mount, either add a second script
+with the same pattern pointed at `/targets2`, or call `test-publish`
+directly:
 ```bash
-cp -r /home/alucard/hackenproof/NAVIProtocol ~/sui/work/NAVIProtocol
+docker compose exec -T sui-local sui client test-publish \
+  --build-env testnet --pubfile-path /work/client.pub.toml \
+  --gas-budget 500000000 /targets2/<path> </dev/null
+```
+Reapply the override with `docker compose up -d` (resets the chain) whenever
+you add or change a mount.
+
+## Build output and read-only mounts
+Building a Move package writes a `build/` folder next to `Move.toml`. A
+`:ro` mount blocks that write, so publishing will fail with a filesystem
+error unless you do one of the following:
+
+**Option A — writable override for one package**, keeping everything else
+read-only:
+```yaml
+services:
+  sui-local:
+    volumes:
+      - /home/alucard/my-audits:/targets:ro
+      - /home/alucard/my-audits/SomeProtocol:/targets/SomeProtocol
+```
+
+**Option B — copy the package into this repo's `work/` folder** before
+publishing, leaving the original completely untouched:
+```bash
+cp -r /home/alucard/my-audits/SomeProtocol ~/sui/work/SomeProtocol
 docker compose exec -T sui-local sui client test-publish \
   --build-env testnet --pubfile-path /work/local.pub.toml \
-  --gas-budget 500000000 /work/NAVIProtocol </dev/null
+  --gas-budget 500000000 /work/SomeProtocol </dev/null
 ```
-This is slower to set up but keeps the original tree untouched and avoids
-compose changes per target. Preferred when you don't want `build/` appearing
-in the audited repo at all.
+Option B is the simpler default if you're unsure — no compose edits, no risk
+of ever writing into someone else's repo.
 
-Either way, `build/` gets written as root from inside the container. To
-clean it up: `sudo rm -rf <package-dir>/build` or
-`sudo chown -R $USER <package-dir>` first.
-
-## Running attacker/victim PoCs
-Once published, treat the target like any other package on this chain — see
-the main README's [Running a PoC](../README.md#running-a-poc) section for the
-call/PTB/multi-actor pattern. Summary:
-```bash
-PKG=<PackageID from publish>
-docker compose exec -T sui-local sui client new-address ed25519   # attacker
-docker compose exec -T sui-local sui client faucet --address <ATTACKER>
-docker compose exec -T sui-local sui client switch --address <ATTACKER>
-docker compose exec -T sui-local sui client call \
-  --package "$PKG" --module <module> --function <entry_fn> --gas-budget 10000000
-```
-
-## TypeScript PoCs against the running chain
-Because the compose file uses `network_mode: host`, scripts on your machine
-reach the chain directly — no mount needed for this part:
-```js
-import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
-const client = new SuiClient({ url: 'http://127.0.0.1:9000' }); // or getFullnodeUrl('localnet')
-```
-Fund a generated keypair via the faucet:
-```bash
-curl -s -X POST localhost:9123/v2/gas -H 'content-type: application/json' \
-  -d '{"FixedAmountRequest":{"recipient":"<ADDR>"}}'
-```
-Write the PoC anywhere on your machine, including directly inside the target
-repo (e.g. `~/hackenproof/NAVIProtocol/poc/`) — the TypeScript side never
-needs a container mount, only the published `PackageID`.
-
-## Multiple unrelated workspaces
-If you audit targets from more than one parent folder, add one `:ro` line per
-folder to the override:
-```yaml
-services:
-  sui-local:
-    volumes:
-      - /home/alucard/hackenproof:/targets:ro
-      - /home/alucard/other-audits:/other-targets:ro
-```
-Reapply with `docker compose up -d` (resets the chain) and adjust
-`publish-target.sh`'s hardcoded host path check if you use it against the
-second mount, or call `test-publish` directly with the right `/other-targets/...`
-path.
+Either way, `build/` is written as root from inside the container. Clean up
+with `sudo rm -rf <package>/build` or `sudo chown -R $USER <package>` first.
 
 ## Troubleshooting
 | Symptom | Cause | Fix |
 |---|---|---|
-| `FAIL: no such dir on host` | `publish-target.sh` checks the *host* path, not the container path | Confirm the folder exists under `~/hackenproof` exactly as named |
-| `Failed to publish ... already published` | Ephemeral pubfile already has this package | `FRESH=1 ./scripts/publish.sh` won't touch it — for external targets, use a per-package `--pubfile-path`, e.g. `/work/navi.pub.toml`, or delete `/work/local.pub.toml` if you don't need earlier local packages |
-| Publish fails: read-only file system | Package folder is under the `:ro` mount | Use the writable-override or copy-into-`work/` approach above |
-| Dependency resolution errors on an older target | Target pins a Sui framework `rev` older/newer than this CLI (1.81.0) | Try `--skip-dependency-verification`, or edit the target's `[dependencies]` rev — note this changes what you're testing |
-| `build/` shows up as untracked changes in the target's own git repo | Container writes as root | Add `build/` to that repo's `.gitignore`, or use the copy-into-`work/` approach to avoid touching the original tree |
+| `TARGET_DIR: unbound variable` | forgot to set the env var | prefix the command: `TARGET_DIR=/your/path ./scripts/publish-target.sh ...` |
+| `FAIL: not found on host` | path typo, or override not applied yet | `docker compose exec -T sui-local ls /targets` to confirm the mount is live |
+| Publish fails: read-only file system | package sits under a `:ro`-only mount | use Option A or B above |
+| `already published` | ephemeral pubfile already has this package | use `PUBFILE=<name>.pub.toml`, or delete `work/local.pub.toml` |
+| Dependency/framework version errors | target pins a different Sui framework revision than this CLI supports | try `--skip-dependency-verification`, or edit that target's `[dependencies]` rev (changes what you're testing) |
+| `docker compose up -d` didn't seem to remount | compose caches the old container | `docker compose down && docker compose up -d` |
 
 ## Safety
-- These are third-party audit targets. Only deploy and test code you're
-  authorized to test, per the relevant bug bounty or engagement scope.
-- This chain has no mainnet state. A finding here proves the code's logic is
-  exploitable; it does not by itself prove impact against any live
-  deployment, which may run different bytecode, config or liquidity.
-- Do not commit PoCs for undisclosed vulnerabilities to this or any public
-  repo before checking the target's disclosure policy.
+- Only test code you're authorized to test, under the relevant engagement or
+  bug bounty scope.
+- This chain has no mainnet state, no real liquidity, no real oracle values.
+  A finding here proves the code's logic is exploitable in isolation, not
+  that the same exploit works against any live deployment.
+- Never commit PoCs for undisclosed vulnerabilities in third-party code to a
+  public repo before checking that project's disclosure policy.
+- `docker-compose.override.yml` is git-ignored on purpose — it contains
+  machine-specific paths and should never be pushed.
