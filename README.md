@@ -112,6 +112,13 @@ suic call --package $PKG --module poc --function mint --gas-budget 10000000
 suic objects        # lists <PKG>::poc::Marker
 ```
 
+Republishing a package fails with "already published", because the ephemeral
+pubfile records it. Discard the pubfile and publish again:
+```bash
+FRESH=1 ./scripts/publish.sh poc
+```
+This forgets every local publication. Republish dependencies first, in order.
+
 Notes on the publish command:
 - The CLI's `test-publish` publishes to the current network (local) but needs
   a build environment and an ephemeral publication file. That is why
