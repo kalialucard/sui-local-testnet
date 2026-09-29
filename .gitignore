@@ -17,3 +17,4 @@ docker-compose.override.yml
 # never track third-party code copied here for local publishing
 work/*/
 !work/poc/
+!work/poc/**

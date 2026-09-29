@@ -156,7 +156,8 @@ docker compose exec -T sui-local sui client test-publish \
   --gas-budget 500000000 /work/SomeProtocol </dev/null
 ```
 Option B is the simpler default if you're unsure — no compose edits, no risk
-of ever writing into someone else's repo.
+of ever writing into someone else's repo. Anything copied into `work/`
+this way is git-ignored by default, so it never gets committed here.
 
 Either way, `build/` is written as root from inside the container. Clean up
 with `sudo rm -rf <package>/build` or `sudo chown -R $USER <package>` first.
