@@ -39,7 +39,7 @@ git clone https://github.com/kalialucard/sui-local-testnet.git
 cd sui-local-testnet
 
 docker compose up -d        # pulls the image on first run (large)
-./scripts/wait.sh           # waits for RPC
+./scripts/wait.sh           # waits for RPC and faucet
 ./scripts/setup-wallet.sh   # creates wallet, switches to local, funds it
 ./scripts/prove.sh          # verifies everything
 ```
@@ -164,6 +164,7 @@ active address. Package IDs and objects from the previous chain are gone.
 | Files in `work/` are root-owned | Written from inside the container | `sudo chown -R $USER work` |
 | Startup fails when `/tmp` is tmpfs | Node data dir in `/tmp` | Set `TMPDIR` to a real directory in the compose file |
 | Faucet 404 | Endpoint differs by version | Try `/v2/gas` and `/gas` |
+| Faucet `Connection refused` on port 9123 | Faucet starts a moment after RPC | Run `./scripts/wait.sh`, then retry |
 | Old package ID not found | Chain was reset | Republish |
 
 ## Security

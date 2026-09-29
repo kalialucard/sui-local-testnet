@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Create the client config + wallet, register the local env, switch to it, fund the address.
 set -euo pipefail
+./scripts/wait.sh
 S="docker compose exec -T sui-local sui client"
 
 $S -y envs </dev/null >/dev/null                     # -y: create config non-interactively
