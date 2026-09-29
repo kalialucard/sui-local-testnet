@@ -1,5 +1,7 @@
 # Running your own PoC against this private testnet
 
+> Verified 2026-09-30 against a real HackenProof target package.
+
 This guide is for anyone who already has this repo's Sui chain running and
 wants to test a Move package or PoC that lives in a **separate folder or
 workspace on their machine** — a security audit target, a client's codebase,
