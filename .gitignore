@@ -18,3 +18,4 @@ docker-compose.override.yml
 work/*/
 !work/poc/
 !work/poc/**
+docker-compose.override.yml.bak
