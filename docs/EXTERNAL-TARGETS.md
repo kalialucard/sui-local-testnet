@@ -1,37 +1,122 @@
-# Running your own PoC against this private testnet
+# Testing your own code against this private testnet
 
-> Verified 2026-09-30 against a real HackenProof target package.
+This chain runs in Docker. Your code doesn't have to. This guide explains
+the two ways to connect a Move package — in any folder, anywhere on your
+machine — to the chain, and why one of them is almost always what you want.
 
-This guide is for anyone who already has this repo's Sui chain running and
-wants to test a Move package or PoC that lives in a **separate folder or
-workspace on their machine** — a security audit target, a client's codebase,
-a different git repo, anything outside this project.
-
-You never need to copy files into this repo or edit any script's contents.
-Everything below uses a local override file plus one environment variable.
+> Verified 2026-09-30. Host CLI approach tested against a real ~30-module
+> DeFi protocol (Momentum CLMM) and a HackenProof bug-bounty package
+> (Haedal), both published successfully with zero container involvement.
 
 ## Contents
-1. [How it works](#how-it-works)
-2. [Step 1: point the container at your workspace](#step-1-point-the-container-at-your-workspace)
-3. [Step 2: publish a package from your workspace](#step-2-publish-a-package-from-your-workspace)
-4. [Step 3: run your PoC](#step-3-run-your-poc)
-5. [Working with several workspaces](#working-with-several-workspaces)
-6. [Build output and read-only mounts](#build-output-and-read-only-mounts)
-7. [Troubleshooting](#troubleshooting)
-8. [Safety](#safety)
+1. [The short answer](#the-short-answer)
+2. [Why this works: what Docker is actually doing here](#why-this-works-what-docker-is-actually-doing-here)
+3. [Method A — host CLI (recommended)](#method-a--host-cli-recommended)
+4. [Method B — CLI inside the container (fallback)](#method-b--cli-inside-the-container-fallback)
+5. [Common publish issues on real-world repos](#common-publish-issues-on-real-world-repos)
+6. [Which method should I actually use?](#which-method-should-i-actually-use)
+7. [Safety](#safety)
 
-## How it works
-Docker containers only see folders you explicitly mount. This repo's
-`docker-compose.yml` mounts `./work` by default. To reach a folder anywhere
-else — `~/my-audits`, `~/client-project`, a cloned repo, whatever — you add
-your own `docker-compose.override.yml`, which Docker Compose merges
-automatically on top of the base file. It is never committed (see
-`.gitignore`), so each person on this rig points it at their own paths
-without touching shared files.
+## The short answer
 
-## Step 1: point the container at your workspace
-In the repo root, create the override once (edit the left-hand host path to
-match your machine):
+Install the `sui` CLI on your host machine once. Then treat this chain like
+any local Sui node you'd run for development — `cd` into whatever folder has
+your target's `Move.toml` and run `sui client publish` directly. No mounts,
+no `docker compose exec`, no wrapper scripts, no `TARGET_DIR` variables.
+
+```bash
+# one-time
+sui client new-env --alias local --rpc http://127.0.0.1:9000
+sui client switch --env local
+sui client faucet
+
+# every target, forever after
+cd ~/wherever/your/target/lives
+sui client test-publish --build-env testnet --pubfile-path ./local.pub.toml --gas-budget 500000000 .
+```
+
+That's it. `~/sui` (this repo) becomes purely "where the chain lives" —
+`docker compose up -d` to start it, nothing else. Every PoC runs in its own
+folder using the host CLI, same as normal local Move development.
+
+## Why this works: what Docker is actually doing here
+
+`docker-compose.yml` uses `network_mode: host`, so the chain's RPC
+(`127.0.0.1:9000`) and faucet (`127.0.0.1:9123`) are reachable from anywhere
+on the host — no container access needed to talk to the chain. The `sui`
+binary only needs to exist *somewhere* that can reach those ports; it
+doesn't need to run inside the same container as the node.
+
+Earlier versions of this doc routed everything through
+`docker compose exec sui-local sui client ...`, which meant every target
+folder had to be bind-mounted into the container (`docker-compose.override.yml`),
+every command needed a full container-path translation, and case-sensitive
+filenames (`move.toml` vs `Move.toml`) or embedded `.git` folders caused
+friction that had nothing to do with the actual chain. None of that
+complexity was necessary — it was a side effect of assuming the CLI had to
+run in the same place as the node. It doesn't.
+
+## Method A — host CLI (recommended)
+
+**Install**, matching the chain's Sui version where possible:
+```bash
+docker compose exec -T sui-local sui --version   # check what the chain expects
+```
+Then install a matching (or close) release from
+[the Sui releases page](https://github.com/MystenLabs/sui/releases), or via
+cargo:
+```bash
+cargo install --locked --git https://github.com/MystenLabs/sui.git --tag testnet-v<VERSION> sui
+```
+
+**Connect it to the running chain** (one-time, persists in `~/.sui` on your
+host — separate from the container's own `~/.sui` volume):
+```bash
+sui client new-env --alias local --rpc http://127.0.0.1:9000
+sui client switch --env local
+sui client faucet
+sui client gas   # confirm funded
+```
+
+**Work normally, in any folder:**
+```bash
+cd ~/hackenproof/SomeProtocol/some-package
+sui client active-env                 # confirm: local
+sui client test-publish \
+  --build-env testnet \
+  --pubfile-path ./local.pub.toml \
+  --gas-budget 500000000 \
+  .
+```
+
+`local.pub.toml` lands next to that package's own `Move.toml` — self
+contained, one per target, no collisions. It's not your repo's file, so
+don't commit it into someone else's checked-out codebase; if that folder is
+its own git repo, add `local.pub.toml` to your global gitignore
+(`~/.gitignore_global`) rather than editing their `.gitignore`.
+
+Then call functions, run PTBs, inspect state — all exactly as documented in
+the main [README's Running a PoC section](../README.md#running-a-poc), just
+without the `docker compose exec` prefix:
+```bash
+sui client call --package <PKG> --module <mod> --function <fn> --gas-budget 10000000
+sui client objects
+sui client tx-block <DIGEST>
+```
+
+**Chain lifecycle stays in Docker**, unrelated to any of the above:
+```bash
+cd ~/sui
+docker compose up -d       # start (or restart after reboot — resets the chain, refund after)
+docker compose down        # stop
+```
+
+## Method B — CLI inside the container (fallback)
+
+Use this only if you can't or don't want to install `sui` on the host (e.g.
+locked-down machine, avoiding version conflicts with something else). It
+mounts your target folder into the container so the container's own `sui`
+binary can see it.
 
 ```bash
 cat > docker-compose.override.yml <<'YAML'
@@ -40,145 +125,65 @@ services:
     volumes:
       - /absolute/path/to/your/workspace:/targets:ro
 YAML
-
-docker compose up -d       # applies the mount — this restarts the chain
-./scripts/setup-wallet.sh  # re-fund after the restart
+docker compose up -d && ./scripts/setup-wallet.sh
 ```
 
-Replace `/absolute/path/to/your/workspace` with wherever your code actually
-lives, for example `/home/alucard/my-audits` or `/home/alucard/client-repo`.
-Mount the **parent folder** if you'll work across several projects inside it
-(see [Working with several workspaces](#working-with-several-workspaces)),
-or a **single project folder** if you only need one.
-
-`:ro` (read-only) means the container can read your code but never modify
-it. Some build tooling needs to write output next to the source — see
-[Build output and read-only mounts](#build-output-and-read-only-mounts) for
-how to handle that without giving up the read-only guarantee everywhere
-else.
-
-Recreating the container restarts the chain (`--force-regenesis`), so do
-this once at the start of a session, not mid-PoC.
-
-## Step 2: publish a package from your workspace
-`scripts/publish-target.sh` takes two inputs: the `TARGET_DIR` environment
-variable (the same host path you put in the override) and the path to the
-package inside it (wherever `Move.toml` sits):
-
-```bash
-TARGET_DIR=/absolute/path/to/your/workspace \
-  ./scripts/publish-target.sh <path-to-package-with-Move.toml>
-```
-
-Example: your workspace is `~/my-audits`, and the package you want to test
-is at `~/my-audits/SomeProtocol/contracts`:
-```bash
-TARGET_DIR=/home/alucard/my-audits \
-  ./scripts/publish-target.sh SomeProtocol/contracts
-```
-
-If you don't know where `Move.toml` is inside a project, find it first:
-```bash
-find /absolute/path/to/your/workspace -iname Move.toml
-```
-
-Success prints `Status: Success` and a `PackageID`. Save it — you'll pass it
-to your PoC.
-
-Publishing the same package again fails with "already published" (the
-ephemeral pubfile remembers it). Either:
-- use a separate pubfile per target: `PUBFILE=someprotocol.pub.toml TARGET_DIR=... ./scripts/publish-target.sh ...`
-- or clear the shared one: `rm work/local.pub.toml` and republish.
-
-## Step 3: run your PoC
-Once published, everything from the main README's
-[Running a PoC](../README.md#running-a-poc) section applies as normal:
-create attacker/victim addresses, fund them, call the package, inspect
-effects with `sui client tx-block` and `sui client objects`.
-
-For scripted (TypeScript/JS) PoCs you don't need the mount at all — this
-compose file uses `network_mode: host`, so any script on your machine reaches
-the chain directly:
-```js
-import { SuiClient } from '@mysten/sui/client';
-const client = new SuiClient({ url: 'http://127.0.0.1:9000' });
-```
-Faucet: `POST http://127.0.0.1:9123/v2/gas` with
-`{"FixedAmountRequest":{"recipient":"<address>"}}`.
-
-Write and run the PoC script wherever you like — inside your own workspace,
-alongside the target code, or anywhere else on your machine. Only the
-published `PackageID` and the chain's local RPC address matter.
-
-## Working with several workspaces
-Add one line per folder to the override:
-```yaml
-services:
-  sui-local:
-    volumes:
-      - /home/alucard/my-audits:/targets:ro
-      - /home/alucard/client-repo:/targets2:ro
-```
-Then publish from either, using the container path that matches the mount
-(`/targets/...` or `/targets2/...`). `publish-target.sh` assumes container
-path `/targets/<subpath>`; for a second mount, either add a second script
-with the same pattern pointed at `/targets2`, or call `test-publish`
-directly:
+Then, from *inside* the repo root (not the target folder — the container
+doesn't know your host paths):
 ```bash
 docker compose exec -T sui-local sui client test-publish \
-  --build-env testnet --pubfile-path /work/client.pub.toml \
-  --gas-budget 500000000 /targets2/<path> </dev/null
-```
-Reapply the override with `docker compose up -d` (resets the chain) whenever
-you add or change a mount.
-
-## Build output and read-only mounts
-Building a Move package writes a `build/` folder next to `Move.toml`. A
-`:ro` mount blocks that write, so publishing will fail with a filesystem
-error unless you do one of the following:
-
-**Option A — writable override for one package**, keeping everything else
-read-only:
-```yaml
-services:
-  sui-local:
-    volumes:
-      - /home/alucard/my-audits:/targets:ro
-      - /home/alucard/my-audits/SomeProtocol:/targets/SomeProtocol
+  --build-env testnet --pubfile-path /work/some-target.pub.toml \
+  --gas-budget 500000000 /targets/<path-to-package>
 ```
 
-**Option B — copy the package into this repo's `work/` folder** before
-publishing, leaving the original completely untouched:
-```bash
-cp -r /home/alucard/my-audits/SomeProtocol ~/sui/work/SomeProtocol
-docker compose exec -T sui-local sui client test-publish \
-  --build-env testnet --pubfile-path /work/local.pub.toml \
-  --gas-budget 500000000 /work/SomeProtocol </dev/null
-```
-Option B is the simpler default if you're unsure — no compose edits, no risk
-of ever writing into someone else's repo. Anything copied into `work/`
-this way is git-ignored by default, so it never gets committed here.
+Known friction with this method, encountered in practice:
+- The mount is `:ro`, so the build step's `build/` output directory can't be
+  written unless you either add a writable override for that one package or
+  copy the package into `./work/` first (see git history of this file for
+  the copy-based recipe if needed).
+- Filenames must match exactly what the CLI expects (`Move.toml`, not
+  `move.toml`) — you can't rename a file on a read-only mount, so this
+  forces the copy-into-`work/` path for any repo with the lowercase variant.
+- Copying a git-tracked target repo into `./work/` risks it being picked up
+  as a nested git repository if not careful; `work/*/` is gitignored in this
+  repo specifically to prevent that (see `.gitignore`).
+- Every command needs the container-path translation from your host path,
+  which is where most of the friction in this file used to live.
 
-Either way, `build/` is written as root from inside the container. Clean up
-with `sudo rm -rf <package>/build` or `sudo chown -R $USER <package>` first.
+None of these are blockers, just added steps that Method A skips entirely.
 
-## Troubleshooting
+## Common publish issues on real-world repos
+
+These apply to both methods, since they come from the target codebase, not
+from Docker or the CLI location:
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| `TARGET_DIR: unbound variable` | forgot to set the env var | prefix the command: `TARGET_DIR=/your/path ./scripts/publish-target.sh ...` |
-| `FAIL: not found on host` | path typo, or override not applied yet | `docker compose exec -T sui-local ls /targets` to confirm the mount is live |
-| Publish fails: read-only file system | package sits under a `:ro`-only mount | use Option A or B above |
-| `already published` | ephemeral pubfile already has this package | use `PUBFILE=<name>.pub.toml`, or delete `work/local.pub.toml` |
-| Dependency/framework version errors | target pins a different Sui framework revision than this CLI supports | try `--skip-dependency-verification`, or edit that target's `[dependencies]` rev (changes what you're testing) |
-| `docker compose up -d` didn't seem to remount | compose caches the old container | `docker compose down && docker compose up -d` |
+| `Package does not have a Move.toml file` | wrong directory, or file is `move.toml` (lowercase) | `find <dir> -iname Move.toml`; rename with `mv move.toml Move.toml` if you're on the host filesystem |
+| `the package does not define an 'local' environment` | package's `Move.toml` has explicit `[environments]` but no `local` entry | use `sui client test-publish --pubfile-path ./local.pub.toml ...` instead of plain `publish` |
+| `Ephemeral publication file ... has chain-id X; it cannot be used to publish to chain with id Y` | chain was reset (new genesis) since that pubfile was created | delete the stale `local.pub.toml` and republish |
+| `already published` | this exact pubfile already recorded this package | delete `local.pub.toml` in that folder, or use `--pubfile-path` pointing at a new file |
+| `CLI's protocol version is X, but the active network's protocol version is Y` | host/container CLI version doesn't exactly match the chain's genesis version | cosmetic in most cases; if publish then fails with a dependency verification error, install a matching CLI version |
+| dependency resolution / framework `rev` errors | target pins an older or newer Sui framework revision than your CLI supports | try `--skip-dependency-verification`, or note that this changes what's actually being tested |
+| `warning: refname '<hash>' is ambiguous` during `git checkout` | Move's dependency resolver pinning a framework commit; harmless | ignore |
+
+## Which method should I actually use?
+
+**Method A (host CLI)** unless you have a specific reason not to install
+`sui` locally. It's simpler, faster, and every quirk above becomes a normal
+one-line fix instead of a container-path puzzle.
+
+**Method B (container)** only if the host CLI genuinely can't be installed,
+or you specifically want the chain and your tooling fully isolated from the
+host (e.g. CI, a shared machine, or deliberately avoiding any local Sui
+install).
 
 ## Safety
-- Only test code you're authorized to test, under the relevant engagement or
+- Only test code you're authorized to test, per the relevant engagement or
   bug bounty scope.
 - This chain has no mainnet state, no real liquidity, no real oracle values.
-  A finding here proves the code's logic is exploitable in isolation, not
-  that the same exploit works against any live deployment.
+  A successful publish and a working exploit here proves the code's logic is
+  exploitable in isolation — it does not by itself prove impact against any
+  live deployment, which may run different bytecode, config, or liquidity.
 - Never commit PoCs for undisclosed vulnerabilities in third-party code to a
   public repo before checking that project's disclosure policy.
-- `docker-compose.override.yml` is git-ignored on purpose — it contains
-  machine-specific paths and should never be pushed.
